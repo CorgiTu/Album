@@ -48,7 +48,7 @@ class AppState:
 
 
 def main(page: ft.Page):
-    page.title = "自定义歌单生成器"
+    page.title = "专辑 - 你的专属歌单生成器"
     page.theme_mode = ft.ThemeMode.DARK
     page.window.width = 800
     page.window.height = 750
@@ -62,7 +62,7 @@ def main(page: ft.Page):
 
     # ─── 顶部标题 ──────────────────────────────────────────────
     title = ft.Text(
-        "自定义歌单生成器",
+        "专辑",
         size=28,
         weight=ft.FontWeight.BOLD,
         color=ft.Colors.INDIGO_400,
