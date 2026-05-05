@@ -1,0 +1,5 @@
+flet>=0.80.0
+requests>=2.28.0
+pycryptodome>=3.20.0
+pyinstaller>=6.0
+pyncm>=1.8.0

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Build output (PyInstaller, etc.)
+dist/
+build/
+*.spec
+
+# Runtime data (cookie privacy protection)
+config.json
+cookie.txt
+qrcodes/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+debug_*.py
+*.png
