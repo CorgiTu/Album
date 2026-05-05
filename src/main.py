@@ -5,11 +5,12 @@
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 
 import flet as ft
 
-from crawler import SongCrawler
+import crawler
 from netease import (
     search_song,
     create_playlist,
@@ -26,10 +27,9 @@ class AppState:
     """集中管理界面控件引用和共享状态"""
 
     def __init__(self):
-        self.crawler: SongCrawler | None = None
-
         self.artist_input: ft.TextField | None = None
         self.count_input: ft.TextField | None = None
+        self.source_dropdown: ft.Dropdown | None = None
         self.playlist_input: ft.TextField | None = None
         self.cookie_input: ft.TextField | None = None
 
@@ -53,111 +53,153 @@ def main(page: ft.Page):
     page.window.width = 800
     page.window.height = 750
     page.window.resizable = False
-    page.padding = 30
+    page.padding = 0
     page.scroll = ft.ScrollMode.AUTO
+    page.bgcolor = "#000000"
 
     state = AppState()
-    # state.api = NeteaseAPI(cookie_file=COOKIE_FILE)  # [扫码登录用 - 注释保留]
-    state.crawler = SongCrawler(headless=True)
 
-    # ─── 顶部标题 ──────────────────────────────────────────────
+    # ─── 头部标题 ──────────────────────────────────────────────
     title = ft.Text(
-        "专辑",
-        size=28,
-        weight=ft.FontWeight.BOLD,
-        color=ft.Colors.INDIGO_400,
+        "专辑 Album",
+        size=32,
+        weight=ft.FontWeight.W_800,
+        color=ft.Colors.WHITE,
     )
     subtitle = ft.Text(
-        "从 QQ 音乐抓取歌曲 → 自动添加到网易云歌单",
-        size=13,
-        color=ft.Colors.GREY_400,
+        "跨平台歌单自动化同步工具",
+        size=14,
+        color="#888888",
     )
 
-    # ─── 输入区域 ──────────────────────────────────────────────
+    # ─── 输入控件 ──────────────────────────────────────────────
     state.artist_input = ft.TextField(
         label="歌手名",
-        hint_text="例如：孙燕姿、周杰伦",
-        width=280,
+        hint_text="请输入歌手名 (留空则默认抓取全网热歌榜)",
         prefix_icon=ft.Icons.PERSON,
+        expand=2,
+        border=ft.InputBorder.NONE,
+        bgcolor="#1E1E1E",
+        border_radius=8,
+        content_padding=15,
     )
     state.count_input = ft.TextField(
         label="抓取数量",
         hint_text="默认 20",
-        width=140,
         value="20",
         keyboard_type=ft.KeyboardType.NUMBER,
         prefix_icon=ft.Icons.NUMBERS,
+        expand=1,
+        border=ft.InputBorder.NONE,
+        bgcolor="#1E1E1E",
+        border_radius=8,
+        content_padding=15,
+    )
+    state.source_dropdown = ft.Dropdown(
+        label="数据源选择",
+        value=crawler.PLATFORM_QQ,
+        options=[
+            ft.dropdown.Option(crawler.PLATFORM_QQ),
+            ft.dropdown.Option(crawler.PLATFORM_DOUYIN),
+            ft.dropdown.Option(crawler.PLATFORM_BILIBILI),
+        ],
+        expand=1,
+        border=ft.InputBorder.NONE,
+        bgcolor="#1E1E1E",
+        border_radius=8,
+        content_padding=15,
     )
     state.playlist_input = ft.TextField(
         label="歌单名称（可选）",
         hint_text="不填则自动生成",
-        width=450,
         prefix_icon=ft.Icons.PLAYLIST_ADD,
+        expand=2,
+        border=ft.InputBorder.NONE,
+        bgcolor="#1E1E1E",
+        border_radius=8,
+        content_padding=15,
     )
     state.cookie_input = ft.TextField(
         label="网易云 Cookie",
         hint_text="请在此处粘贴网易云网页版抓取的 MUSIC_U Cookie",
         multiline=True,
         min_lines=3,
-        max_lines=5,
-        width=620,
+        max_lines=3,
         prefix_icon=ft.Icons.LOCK,
         password=True,
+        border=ft.InputBorder.NONE,
+        bgcolor="#1E1E1E",
+        border_radius=8,
+        content_padding=15,
     )
 
-    input_top_row = ft.Row(
-        [state.artist_input, state.count_input],
-        spacing=10,
+    # ─── 卡片 1：核心配置区 ───────────────────────────────────
+    card_config = ft.Container(
+        content=ft.Column(
+            [
+                ft.Row(
+                    [state.artist_input, state.count_input],
+                    spacing=12,
+                ),
+                ft.Row(
+                    [state.source_dropdown, state.playlist_input],
+                    spacing=12,
+                ),
+            ],
+            spacing=15,
+        ),
+        width=600,
+        bgcolor="#121212",
+        border_radius=16,
+        padding=25,
+        border=ft.border.all(1, "#282828"),
     )
 
-    # ─── 按钮区域 ──────────────────────────────────────────────
-    # [注释保留] 扫码登录按钮
-    # state.login_button = ft.FilledButton(
-    #     "扫码登录",
-    #     icon=ft.Icons.QR_CODE_SCANNER,
-    #     on_click=lambda e: _start_login(page, state),
-    # )
-    state.generate_button = ft.FilledTonalButton(
+    # ─── 卡片 2：鉴权配置区 ───────────────────────────────────
+    card_auth = ft.Container(
+        content=ft.Column(
+            [
+                ft.Text("网易云 MUSIC_U", size=14, weight=ft.FontWeight.BOLD, color="#AAAAAA"),
+                state.cookie_input,
+            ],
+            spacing=15,
+        ),
+        width=600,
+        bgcolor="#121212",
+        border_radius=16,
+        padding=25,
+        border=ft.border.all(1, "#282828"),
+    )
+
+    # ─── 生成按钮 ──────────────────────────────────────────────
+    state.generate_button = ft.FilledButton(
         "生成专属歌单",
         icon=ft.Icons.AUTO_AWESOME,
         disabled=False,
         on_click=lambda e: _start_generate(page, state),
+        width=600,
+        height=50,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=25),
+            bgcolor=ft.Colors.BLUE_700,
+            color=ft.Colors.WHITE,
+        ),
     )
 
-    button_row = ft.Row(
-        [state.generate_button],
-        spacing=10,
+    # ─── 进度条组件 ─────────────────────────────────────────────
+    state.progress_text = ft.Text(
+        "",
+        size=12,
+        color=ft.Colors.INDIGO_300,
+        visible=False,
     )
-
-    # [注释保留] 二维码展示区
-    # state.qr_image = ft.Image(
-    #     src="",
-    #     width=240,
-    #     height=240,
-    #     fit=ft.BoxFit.CONTAIN,
-    #     visible=False,
-    # )
-    # state.qr_container = ft.Container(
-    #     content=ft.Column(
-    #         [
-    #             ft.Text("扫码登录", size=14, weight=ft.FontWeight.BOLD),
-    #             state.qr_image,
-    #         ],
-    #         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-    #         spacing=8,
-    #     ),
-    #     padding=15,
-    #     border=ft.Border.all(1, ft.Colors.OUTLINE),
-    #     border_radius=12,
-    #     visible=False,
-    # )
-    # state.login_status = ft.Text("", size=12, color=ft.Colors.GREEN_400)
-    #
-    # qr_row = ft.Row(
-    #     [state.qr_container, state.login_status],
-    #     spacing=20,
-    #     vertical_alignment=ft.CrossAxisAlignment.START,
-    # )
+    state.progress_bar = ft.ProgressBar(
+        value=0,
+        visible=False,
+        bar_height=4,
+        color=ft.Colors.INDIGO_400,
+        bgcolor=ft.Colors.GREY_800,
+    )
 
     # ─── 日志区域 ──────────────────────────────────────────────
     state.log_text = ft.Text(
@@ -169,57 +211,41 @@ def main(page: ft.Page):
     log_container = ft.Container(
         content=ft.Column(
             [state.log_text],
-            scroll=ft.ScrollMode.AUTO,
-            height=220,
+            scroll=ft.ScrollMode.ALWAYS,
+            height=200,
         ),
-        padding=15,
-        border=ft.Border.all(1, ft.Colors.OUTLINE),
+        width=600,
+        height=200,
+        bgcolor="#0A0A0A",
         border_radius=12,
-        bgcolor=ft.Colors.GREY_900,
-        expand=True,
+        padding=15,
+        border=ft.border.all(1, "#1A1A1A"),
     )
 
-    # ─── 进度条组件 ─────────────────────────────────────────────
-    state.progress_text = ft.Text(
-        "",
-        size=12,
-        color=ft.Colors.INDIGO_300,
-        visible=False,
-    )
-    state.progress_bar = ft.ProgressBar(
-        width=620,
-        value=0,
-        visible=False,
+    # ─── 定宽主容器（600px，水平居中）────────────────────────
+    main_col = ft.Column(
+        [
+            title,
+            subtitle,
+            card_config,
+            card_auth,
+            state.generate_button,
+            state.progress_text,
+            state.progress_bar,
+            log_container,
+        ],
+        width=600,
+        spacing=25,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
-    # ─── 组装布局 ──────────────────────────────────────────────
     page.add(
-        ft.Column(
-            [
-                title,
-                subtitle,
-                ft.Divider(height=20),
-                input_top_row,
-                state.playlist_input,
-                state.cookie_input,
-                ft.Divider(height=10),
-                button_row,
-                ft.Divider(height=10),
-                # qr_row,          # [扫码登录用 - 注释保留]
-                # ft.Divider(height=10),
-                state.progress_text,
-                state.progress_bar,
-                ft.Divider(height=10),
-                ft.Text("运行日志", size=14, weight=ft.FontWeight.BOLD),
-                log_container,
-            ],
-            spacing=5,
+        ft.Container(
+            content=main_col,
+            alignment=ft.alignment.Alignment(x=0, y=-1),
+            padding=ft.padding.only(top=40),
         )
     )
-
-    # [注释保留] 检查是否已有登录态
-    # if state.api.is_logged_in:
-    #     _set_logged_in_ui(state)
 
     # ─── 启动时读取已保存的 Cookie（免去每次粘贴）─────────────
     config_path = Path(__file__).parent.parent / "config.json"
@@ -376,14 +402,21 @@ def _start_generate(page: ft.Page, state: AppState):
         _safe_int(state.count_input.value, 20),
         state.playlist_input.value.strip() or None,
         state.cookie_input.value.strip(),
+        state.source_dropdown.value,
     )
 
 
 async def _do_generate(
     page: ft.Page, state: AppState,
-    artist: str, count: int, playlist_name: str | None, cookie: str,
+    artist: str, count: int, playlist_name: str | None, cookie: str, source: str,
 ):
-    _log(state, f"开始处理: 歌手={artist}, 数量={count}")
+    # ── 动态状态提示 ──────────────────────────────────────────
+    if source == crawler.PLATFORM_QQ and artist:
+        _log(state, f"正在从 [{source}] 抓取 {artist} 的热门歌曲...")
+    else:
+        _log(state, f"正在从 [{source}] 抓取数据...")
+
+    _log(state, f"数据源: {source} | 数量: {count}")
 
     # ── 校验 Cookie ────────────────────────────────────────────
     if not cookie:
@@ -393,9 +426,9 @@ async def _do_generate(
         page.update()
         return
 
-    _log(state, "[1/5] 正在从 QQ 音乐抓取歌曲列表...")
+    _log(state, "[1/5] 正在抓取歌曲列表...")
     try:
-        songs = await state.crawler.search_top_songs(artist, count)
+        songs = await crawler.crawl(source, artist, count)
     except Exception as e:
         _log(state, f"[错误] 抓取失败: {e}")
         state.generate_button.disabled = False
@@ -403,7 +436,10 @@ async def _do_generate(
         return
 
     if not songs:
-        _log(state, "[错误] 未抓取到任何歌曲，请检查歌手名")
+        if source == crawler.PLATFORM_QQ and artist:
+            _log(state, "[错误] 未抓取到任何歌曲，请检查歌手名")
+        else:
+            _log(state, f"[错误] 未从 [{source}] 抓取到数据，请稍后重试")
         state.generate_button.disabled = False
         page.update()
         return
@@ -459,7 +495,14 @@ async def _do_generate(
     _log(state, f"成功匹配 {len(track_ids)}/{len(songs)} 首")
 
     # ── 创建歌单 ──────────────────────────────────────────────
-    name = playlist_name or f"{artist}热门歌曲(自动生成)"
+    if not playlist_name:
+        if artist:
+            name = f"[{artist}] 专属精选"
+        else:
+            today = datetime.now().strftime("%m月%d日")
+            name = f"全网热歌实时精选 [{today}]"
+    else:
+        name = playlist_name
     _log(state, f"\n[3/5] 正在创建歌单: {name}")
     try:
         playlist_id = await asyncio.to_thread(create_playlist, name, cookie)
