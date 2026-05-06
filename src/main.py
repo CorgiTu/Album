@@ -15,6 +15,7 @@ from netease import (
     search_song,
     create_playlist,
     add_songs_to_playlist,
+    get_playlist_track_ids,
     CookieInvalidError,
     SearchFailedError,
     PlaylistOperationError,
@@ -34,6 +35,16 @@ class AppState:
         self.cookie_input: ft.TextField | None = None
 
         self.generate_button: ft.FilledTonalButton | None = None
+
+        # ── 模式切换 ──────────────────────────────────────────
+        self.mode_radio_group: ft.RadioGroup | None = None
+        self.mode_hint: ft.Text | None = None
+
+        # ── 过滤选项 ───────────────────────────────────────────
+        self.exclude_cover_cb: ft.Checkbox | None = None
+        self.exclude_live_cb: ft.Checkbox | None = None
+        self.exclude_inst_cb: ft.Checkbox | None = None
+        self.filter_hint: ft.Text | None = None
 
         # [注释保留] 扫码登录控件
         # self.api: NeteaseAPI | None = None
@@ -73,6 +84,37 @@ def main(page: ft.Page):
     )
 
     # ─── 输入控件 ──────────────────────────────────────────────
+    def _on_artist_changed(e):
+        """歌手名输入变化时，联动过滤控件状态"""
+        has_artist = bool(state.artist_input.value.strip())
+        state.exclude_cover_cb.disabled = not has_artist
+        if has_artist:
+            state.exclude_cover_cb.value = True
+            state.filter_hint.visible = False
+        else:
+            state.exclude_cover_cb.value = False
+            state.filter_hint.visible = True
+        page.update()
+
+    def _on_mode_changed(e):
+        """模式切换时，联动歌单输入框的提示文案"""
+        is_append = state.mode_radio_group.value == "append"
+        state.playlist_input.hint_text = (
+            "请输入目标歌单的 ID (必填)" if is_append
+            else "请输入新歌单名称 (可选)"
+        )
+        state.playlist_input.label = (
+            "目标歌单 ID" if is_append
+            else "歌单名称（可选）"
+        )
+        state.playlist_input.prefix_icon = (
+            ft.Icons.PLAYLIST_ADD_CHECK if is_append
+            else ft.Icons.PLAYLIST_ADD
+        )
+        state.mode_hint.visible = is_append
+        state.playlist_input.value = ""
+        page.update()
+
     state.artist_input = ft.TextField(
         label="歌手名",
         hint_text="请输入歌手名 (留空则默认抓取全网热歌榜)",
@@ -82,6 +124,7 @@ def main(page: ft.Page):
         bgcolor="#1E1E1E",
         border_radius=8,
         content_padding=15,
+        on_change=_on_artist_changed,
     )
     state.count_input = ft.TextField(
         label="抓取数量",
@@ -111,13 +154,31 @@ def main(page: ft.Page):
     )
     state.playlist_input = ft.TextField(
         label="歌单名称（可选）",
-        hint_text="不填则自动生成",
+        hint_text="请输入新歌单名称 (可选)",
         prefix_icon=ft.Icons.PLAYLIST_ADD,
-        expand=2,
+        expand=1,
         border=ft.InputBorder.NONE,
         bgcolor="#1E1E1E",
         border_radius=8,
         content_padding=15,
+    )
+
+    state.mode_radio_group = ft.RadioGroup(
+        content=ft.Row(
+            [
+                ft.Radio(value="new", label="新建歌单"),
+                ft.Radio(value="append", label="追加到已有"),
+            ],
+            spacing=4,
+        ),
+        value="new",
+        on_change=_on_mode_changed,
+    )
+    state.mode_hint = ft.Text(
+        "右键网易云歌单分享链接可查看 ID",
+        size=10,
+        color="#666666",
+        visible=False,
     )
     state.cookie_input = ft.TextField(
         label="网易云 Cookie",
@@ -133,6 +194,34 @@ def main(page: ft.Page):
         content_padding=15,
     )
 
+    # ── 过滤选项控件 ──────────────────────────────────────────
+    state.exclude_cover_cb = ft.Checkbox(
+        label="排除翻唱",
+        value=True,
+        disabled=False,
+        fill_color=ft.Colors.INDIGO_400,
+        check_color=ft.Colors.WHITE,
+    )
+    state.exclude_live_cb = ft.Checkbox(
+        label="排除 Live",
+        value=False,
+        fill_color=ft.Colors.INDIGO_400,
+        check_color=ft.Colors.WHITE,
+    )
+    state.exclude_inst_cb = ft.Checkbox(
+        label="排除伴奏",
+        value=True,
+        fill_color=ft.Colors.INDIGO_400,
+        check_color=ft.Colors.WHITE,
+    )
+    state.filter_hint = ft.Text(
+        value="热榜模式下，翻唱过滤将自动关闭以保证榜单完整度",
+        size=11,
+        color="#888888",
+        italic=True,
+        visible=False,
+    )
+
     # ─── 卡片 1：核心配置区 ───────────────────────────────────
     card_config = ft.Container(
         content=ft.Column(
@@ -142,11 +231,23 @@ def main(page: ft.Page):
                     spacing=12,
                 ),
                 ft.Row(
-                    [state.source_dropdown, state.playlist_input],
+                    [state.source_dropdown, state.mode_radio_group],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    [state.playlist_input],
                     spacing=12,
                 ),
+                state.mode_hint,
+                ft.Divider(height=1, color="#282828"),
+                ft.Row(
+                    [state.exclude_cover_cb, state.exclude_live_cb, state.exclude_inst_cb],
+                    spacing=8,
+                ),
+                state.filter_hint,
             ],
-            spacing=15,
+            spacing=10,
         ),
         width=600,
         bgcolor="#121212",
@@ -238,6 +339,11 @@ def main(page: ft.Page):
         spacing=25,
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
     )
+
+    # ── 初始状态同步：歌手名为空 → 热榜模式 ──────────────────
+    state.exclude_cover_cb.disabled = True
+    state.exclude_cover_cb.value = False
+    state.filter_hint.visible = True
 
     page.add(
         ft.Container(
@@ -403,12 +509,14 @@ def _start_generate(page: ft.Page, state: AppState):
         state.playlist_input.value.strip() or None,
         state.cookie_input.value.strip(),
         state.source_dropdown.value,
+        state.mode_radio_group.value,
     )
 
 
 async def _do_generate(
     page: ft.Page, state: AppState,
     artist: str, count: int, playlist_name: str | None, cookie: str, source: str,
+    mode: str,
 ):
     # ── 动态状态提示 ──────────────────────────────────────────
     if source == crawler.PLATFORM_QQ and artist:
@@ -447,6 +555,30 @@ async def _do_generate(
     _log(state, f"成功抓取 {len(songs)} 首歌曲:")
     for s in songs:
         _log(state, f"  {s['song']} - {s['artist']}")
+
+    # ── 上下文感知过滤 ─────────────────────────────────────────
+    exclude_cover = state.exclude_cover_cb.value
+    exclude_live = state.exclude_live_cb.value
+    exclude_inst = state.exclude_inst_cb.value
+
+    filtered = []
+    for s in songs:
+        if crawler.filter_song(
+            s["song"], s["artist"], artist,
+            exclude_cover, exclude_live, exclude_inst,
+        ):
+            filtered.append(s)
+
+    dropped = len(songs) - len(filtered)
+    if dropped > 0:
+        _log(state, f"过滤掉 {dropped} 首{'（热榜模式自动忽略翻唱过滤）' if not artist else ''}")
+    songs = filtered
+
+    if not songs:
+        _log(state, "[错误] 过滤后无剩余歌曲，无法继续")
+        state.generate_button.disabled = False
+        page.update()
+        return
 
     # ── 搜索 track_id ──────────────────────────────────────────
     _log(state, f"\n[2/5] 正在网易云搜索歌曲 ID（共 {len(songs)} 首）...")
@@ -494,7 +626,103 @@ async def _do_generate(
 
     _log(state, f"成功匹配 {len(track_ids)}/{len(songs)} 首")
 
-    # ── 创建歌单 ──────────────────────────────────────────────
+    # ── 分支：新建歌单 vs 追加到已有 ─────────────────────────
+    if mode == "append":
+        # ── 追加模式：查重后增量追加 ──────────────────────────
+        try:
+            raw_pid = playlist_name.strip() if playlist_name else ""
+            target_pid = int(raw_pid)
+        except (ValueError, AttributeError):
+            _log(state, "[错误] 请填写有效的歌单 ID（纯数字）")
+            _log(state, "提示：右键网易云歌单分享链接可查看 ID")
+            state.generate_button.disabled = False
+            page.update()
+            return
+
+        _log(state, f"\n[3/5] 正在查询目标歌单 (ID: {target_pid}) 现有曲目...")
+        try:
+            existing_ids = await asyncio.to_thread(
+                get_playlist_track_ids, target_pid, cookie
+            )
+        except CookieInvalidError as e:
+            _log(state, f"\n[错误] Cookie 无效: {e}")
+            _log(state, "请重新粘贴有效的 MUSIC_U Cookie 后重试")
+            state.generate_button.disabled = False
+            page.update()
+            return
+        except PlaylistOperationError as e:
+            _log(state, f"[错误] 查询歌单失败: {e}")
+            state.generate_button.disabled = False
+            page.update()
+            return
+        except Exception as e:
+            _log(state, f"[错误] 查询歌单异常: {e}")
+            state.generate_button.disabled = False
+            page.update()
+            return
+
+        new_ids = [tid for tid in track_ids if tid not in existing_ids]
+        skip_count = len(track_ids) - len(new_ids)
+        _log(
+            state,
+            f"[增量更新] 检测完毕：跳过 {skip_count} 首已有歌曲，"
+            f"即将追加 {len(new_ids)} 首新歌",
+        )
+
+        if not new_ids:
+            _log(state, "[增量更新] 所有歌曲均已存在，无需追加")
+            _log(state, "=" * 40)
+            _log(state, "✅ 歌单已是最新！")
+            _log(state, "=" * 40)
+            state.generate_button.disabled = False
+            page.update()
+            return
+
+        # ── 追加写入 ──────────────────────────────────────────
+        _log(state, f"\n[4/5] 正在将 {len(new_ids)} 首新歌追加到歌单...")
+        try:
+            success = await asyncio.to_thread(
+                add_songs_to_playlist, target_pid, new_ids, cookie
+            )
+        except CookieInvalidError as e:
+            _log(state, f"\n[错误] Cookie 无效: {e}")
+            _log(state, "请重新粘贴有效的 MUSIC_U Cookie 后重试")
+            state.generate_button.disabled = False
+            page.update()
+            return
+        except PlaylistOperationError as e:
+            _log(state, f"[错误] 添加歌曲失败: {e}")
+            state.generate_button.disabled = False
+            page.update()
+            return
+        except Exception as e:
+            _log(state, f"[错误] 添加歌曲异常: {e}")
+            state.generate_button.disabled = False
+            page.update()
+            return
+
+        # ── 完成 ────────────────────────────────────────────
+        _log(state, f"\n[5/5] 操作完成!")
+        if success:
+            _log(state, "=" * 40)
+            _log(state, "✅ 增量更新成功！")
+            _log(state, f"   歌单 ID: {target_pid}")
+            _log(state, f"   本次追加: {len(new_ids)} 首")
+            _log(state, f"   歌单总量: {len(existing_ids) + len(new_ids)} 首")
+            _log(state, "=" * 40)
+            state.progress_text.value = "🎉 歌单增量更新成功！"
+            state.progress_bar.value = 1.0
+            _save_cookie(cookie)
+        else:
+            _log(state, "⚠ 追加歌曲时遇到问题，请检查网易云歌单")
+            state.progress_text.visible = False
+            state.progress_bar.visible = False
+
+        state.generate_button.disabled = False
+        page.update()
+        return
+
+    # ── 新建模式：原逻辑 ──────────────────────────────────────
     if not playlist_name:
         if artist:
             name = f"[{artist}] 专属精选"
@@ -564,7 +792,6 @@ async def _do_generate(
         _log(state, "=" * 40)
         state.progress_text.value = "🎉 专属歌单创建成功！"
         state.progress_bar.value = 1.0
-        # 保存有效的 Cookie 到 config.json，方便下次自动填充
         _save_cookie(cookie)
     else:
         _log(state, "⚠ 添加歌曲时遇到问题，请检查网易云歌单")

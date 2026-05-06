@@ -6,7 +6,7 @@
 import pyncm
 from pyncm.apis.login import LoginViaCookie, GetCurrentLoginStatus
 from pyncm.apis.cloudsearch import GetSearchResult
-from pyncm.apis.playlist import SetCreatePlaylist, SetManipulatePlaylistTracks
+from pyncm.apis.playlist import SetCreatePlaylist, SetManipulatePlaylistTracks, GetPlaylistInfo
 
 
 class NeteaseError(Exception):
@@ -183,3 +183,36 @@ def add_songs_to_playlist(playlist_id: int, track_ids: list[int], cookie: str) -
     if result.get("code") == 200:
         return True
     return result.get("code") == 502
+
+
+def get_playlist_track_ids(playlist_id: int, cookie: str) -> set[int]:
+    """
+    查询指定歌单中所有已有歌曲的 ID 集合
+
+    Args:
+        playlist_id: 歌单 ID
+        cookie: 网易云 MUSIC_U Cookie 字符串
+
+    Returns:
+        歌曲 ID 的集合（set[int]），可用于 O(1) 查重
+
+    Raises:
+        CookieInvalidError: Cookie 无效
+        PlaylistOperationError: 获取歌单信息失败
+    """
+    _init_session(cookie)
+
+    try:
+        result = GetPlaylistInfo(playlist_id)
+    except Exception as e:
+        raise PlaylistOperationError(f"获取歌单信息异常: {e}") from e
+
+    if result.get("code") != 200:
+        raise PlaylistOperationError(
+            f"获取歌单信息失败，API 返回 code={result.get('code')}"
+        )
+
+    playlist = result.get("playlist", {})
+    track_ids_raw = playlist.get("trackIds", [])
+
+    return {item["id"] for item in track_ids_raw if "id" in item}

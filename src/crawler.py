@@ -198,5 +198,60 @@ async def _crawl_bilibili(top_n: int) -> list[dict]:
     return mock_songs[:top_n]
 
 
+def filter_song(song_name: str, song_artist: str,
+                target_artist: str,
+                exclude_cover: bool, exclude_live: bool, exclude_inst: bool) -> bool:
+    """上下文感知的歌曲过滤器
+
+    Args:
+        song_name:     歌曲名
+        song_artist:   演唱者（可能包含多位，用 " / " 分隔）
+        target_artist: 用户输入的歌手名；为空表示全网热歌榜模式
+        exclude_cover: 是否排除翻唱（热榜模式下此参数被强制忽略）
+        exclude_live:  是否排除 Live 版本
+        exclude_inst:  是否排除伴奏/纯音乐版本
+
+    Returns:
+        True 表示通过过滤（保留），False 表示应被丢弃
+    """
+    name_lower = song_name.lower()
+    artist_lower = song_artist.lower()
+
+    # ── 热榜模式（用户未指定歌手） ──────────────────────────────
+    if not target_artist or not target_artist.strip():
+        # 强制忽略"排除翻唱"限制 —— 保留榜单原貌
+        # "排除 Live" 依然生效
+        if exclude_live:
+            if any(kw in name_lower for kw in ("live", "现场", "演唱版")):
+                return False
+        # "排除伴奏" 依然生效
+        if exclude_inst:
+            if any(kw in name_lower for kw in ("伴奏", "instrumental", "inst.")):
+                return False
+        return True
+
+    # ── 专属歌手模式（用户指定了歌手） ──────────────────────────
+    target_lower = target_artist.strip().lower()
+
+    # 1. 严格歌手匹配校验：演唱者必须包含目标歌手
+    #    将 " / " 分隔的歌手拆开逐一比对
+    artists = [a.strip().lower() for a in artist_lower.split(" / ")]
+    if not any(target_lower in a for a in artists):
+        return False
+
+    # 2. 常规关键字检测
+    if exclude_cover:
+        if any(kw in name_lower for kw in ("翻唱", "cover")):
+            return False
+    if exclude_live:
+        if any(kw in name_lower for kw in ("live", "现场", "演唱版")):
+            return False
+    if exclude_inst:
+        if any(kw in name_lower for kw in ("伴奏", "instrumental", "inst.")):
+            return False
+
+    return True
+
+
 class CrawlerError(Exception):
     """爬虫操作异常"""
