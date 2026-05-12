@@ -16,6 +16,8 @@ from netease import (
     create_playlist,
     add_songs_to_playlist,
     get_playlist_track_ids,
+    init_session_once,
+    search_song_shared,
     CookieInvalidError,
     SearchFailedError,
     PlaylistOperationError,
@@ -117,7 +119,7 @@ def main(page: ft.Page):
 
     state.artist_input = ft.TextField(
         label="歌手名",
-        hint_text="请输入歌手名 (留空则默认抓取全网热歌榜)",
+        hint_text="输入歌手名（多个请用逗号或空格分隔，留空则抓取热榜）",
         prefix_icon=ft.Icons.PERSON,
         expand=2,
         border=ft.InputBorder.NONE,
@@ -141,11 +143,7 @@ def main(page: ft.Page):
     state.source_dropdown = ft.Dropdown(
         label="数据源选择",
         value=crawler.PLATFORM_QQ,
-        options=[
-            ft.dropdown.Option(crawler.PLATFORM_QQ),
-            ft.dropdown.Option(crawler.PLATFORM_DOUYIN),
-            ft.dropdown.Option(crawler.PLATFORM_BILIBILI),
-        ],
+        options=[ft.dropdown.Option(p) for p in crawler.get_all_platforms()],
         expand=1,
         border=ft.InputBorder.NONE,
         bgcolor="#1E1E1E",
@@ -501,10 +499,18 @@ def main(page: ft.Page):
 def _start_generate(page: ft.Page, state: AppState):
     state.generate_button.disabled = True
     page.update()
+
+    import re
+    raw = state.artist_input.value.strip()
+    if raw:
+        target_list = [name.strip() for name in re.split(r'[,，\s]+', raw) if name.strip()]
+    else:
+        target_list = []
+
     page.run_task(
         _do_generate,
         page, state,
-        state.artist_input.value.strip(),
+        target_list,
         _safe_int(state.count_input.value, 20),
         state.playlist_input.value.strip() or None,
         state.cookie_input.value.strip(),
@@ -515,17 +521,9 @@ def _start_generate(page: ft.Page, state: AppState):
 
 async def _do_generate(
     page: ft.Page, state: AppState,
-    artist: str, count: int, playlist_name: str | None, cookie: str, source: str,
+    artists: list[str], count: int, playlist_name: str | None, cookie: str, source: str,
     mode: str,
 ):
-    # ── 动态状态提示 ──────────────────────────────────────────
-    if source == crawler.PLATFORM_QQ and artist:
-        _log(state, f"正在从 [{source}] 抓取 {artist} 的热门歌曲...")
-    else:
-        _log(state, f"正在从 [{source}] 抓取数据...")
-
-    _log(state, f"数据源: {source} | 数量: {count}")
-
     # ── 校验 Cookie ────────────────────────────────────────────
     if not cookie:
         _log(state, "[错误] 请先在 Cookie 输入框中粘贴网易云 MUSIC_U Cookie")
@@ -534,89 +532,116 @@ async def _do_generate(
         page.update()
         return
 
+    _log(state, f"数据源: {source} | 数量: {count}")
+    if artists:
+        _log(state, f"目标歌手: {' / '.join(artists)} (共 {len(artists)} 位)")
+    else:
+        _log(state, "模式: 全网热歌榜")
+
+    # ── 第1步：多歌手聚合抓取 ──────────────────────────────────
     _log(state, "[1/5] 正在抓取歌曲列表...")
-    try:
-        songs = await crawler.crawl(source, artist, count)
-    except Exception as e:
-        _log(state, f"[错误] 抓取失败: {e}")
+    all_songs: list[dict] = []
+    artists_to_crawl = artists if artists else [""]
+
+    for target_artist in artists_to_crawl:
+        display_name = target_artist if target_artist else "全网热歌榜"
+        _log(state, f"  ▶ 正在抓取 [{display_name}] 的歌曲...")
+        try:
+            songs = await crawler.crawl(source, target_artist, count)
+        except Exception as e:
+            _log(state, f"  ⚠ [{display_name}] 抓取失败: {e}")
+            continue
+
+        if not songs:
+            _log(state, f"  ⚠ [{display_name}] 未抓取到歌曲")
+            continue
+
+        exclude_cover = state.exclude_cover_cb.value
+        exclude_live = state.exclude_live_cb.value
+        exclude_inst = state.exclude_inst_cb.value
+
+        filtered = []
+        for s in songs:
+            if crawler.filter_song(
+                s["song"], s["artist"], target_artist if target_artist else "",
+                exclude_cover, exclude_live, exclude_inst,
+            ):
+                filtered.append(s)
+
+        dropped = len(songs) - len(filtered)
+        if dropped > 0:
+            _log(state, f"  ⚠ 过滤掉 {dropped} 首（翻唱/Live/伴奏）")
+
+        if filtered:
+            _log(state, f"  ✓ [{display_name}] 成功获取 {len(filtered)} 首")
+            all_songs.extend(filtered)
+
+    if not all_songs:
+        _log(state, "[错误] 未抓取到任何歌曲，请检查歌手名或数据源")
         state.generate_button.disabled = False
         page.update()
         return
 
-    if not songs:
-        if source == crawler.PLATFORM_QQ and artist:
-            _log(state, "[错误] 未抓取到任何歌曲，请检查歌手名")
-        else:
-            _log(state, f"[错误] 未从 [{source}] 抓取到数据，请稍后重试")
-        state.generate_button.disabled = False
-        page.update()
-        return
-
-    _log(state, f"成功抓取 {len(songs)} 首歌曲:")
-    for s in songs:
+    _log(state, f"聚合完成，共 {len(all_songs)} 首歌曲:")
+    for s in all_songs:
         _log(state, f"  {s['song']} - {s['artist']}")
 
-    # ── 上下文感知过滤 ─────────────────────────────────────────
-    exclude_cover = state.exclude_cover_cb.value
-    exclude_live = state.exclude_live_cb.value
-    exclude_inst = state.exclude_inst_cb.value
-
-    filtered = []
-    for s in songs:
-        if crawler.filter_song(
-            s["song"], s["artist"], artist,
-            exclude_cover, exclude_live, exclude_inst,
-        ):
-            filtered.append(s)
-
-    dropped = len(songs) - len(filtered)
-    if dropped > 0:
-        _log(state, f"过滤掉 {dropped} 首{'（热榜模式自动忽略翻唱过滤）' if not artist else ''}")
-    songs = filtered
-
-    if not songs:
-        _log(state, "[错误] 过滤后无剩余歌曲，无法继续")
-        state.generate_button.disabled = False
-        page.update()
-        return
-
-    # ── 搜索 track_id ──────────────────────────────────────────
-    _log(state, f"\n[2/5] 正在网易云搜索歌曲 ID（共 {len(songs)} 首）...")
-    total_songs = len(songs)
+    # ── 第2步：搜索 track_id（高并发版） ──────────────────────
+    _log(state, f"\n[2/5] 正在网易云搜索歌曲 ID（共 {len(all_songs)} 首）...")
+    total_songs = len(all_songs)
     state.progress_text.value = f"正在搜索歌曲... (0/{total_songs})"
     state.progress_text.visible = True
     state.progress_bar.value = 0
     state.progress_bar.visible = True
     page.update()
 
-    track_ids = []
-    for i, s in enumerate(songs, 1):
-        keyword = f"{s['song']} {s['artist']}".strip()
-        state.progress_text.value = f"正在处理: {s['artist']} - {s['song']} ({i}/{total_songs})..."
-        state.progress_bar.value = i / total_songs
+    try:
+        init_session_once(cookie)
+    except CookieInvalidError as e:
+        _log(state, f"\n[错误] Cookie 无效: {e}")
+        _log(state, "请重新粘贴有效的 MUSIC_U Cookie 后重试")
+        state.generate_button.disabled = False
+        state.progress_text.visible = False
+        state.progress_bar.visible = False
         page.update()
-        await asyncio.sleep(0)
-        _log(state, f"  搜索 [{i}/{total_songs}]: {keyword}")
-        try:
-            tid = await asyncio.to_thread(search_song, keyword, cookie)
-            if tid:
-                track_ids.append(tid)
-                _log(state, f"    ✓ 匹配成功 → ID: {tid}")
+        return
+
+    semaphore = asyncio.Semaphore(5)
+    completed = [0]
+
+    async def _search_one(song: dict) -> tuple[dict, int | None, str | None]:
+        async with semaphore:
+            keyword = f"{song['song']} {song['artist']}".strip()
+            try:
+                tid = await asyncio.to_thread(search_song_shared, keyword)
+            except SearchFailedError as e:
+                return (song, None, f"搜索请求异常: {e}")
+            except Exception as e:
+                return (song, None, f"搜索异常: {e}")
             else:
-                _log(state, f"    ✗ 未找到匹配")
-        except CookieInvalidError as e:
-            _log(state, f"\n[错误] Cookie 无效: {e}")
-            _log(state, "请重新粘贴有效的 MUSIC_U Cookie 后重试")
-            state.generate_button.disabled = False
-            state.progress_text.visible = False
-            state.progress_bar.visible = False
-            page.update()
-            return
-        except SearchFailedError as e:
-            _log(state, f"    ✗ 搜索请求异常: {e}")
-        except Exception as e:
-            _log(state, f"    ✗ 搜索异常: {e}")
-        await asyncio.sleep(0.5)
+                return (song, tid, None)
+            finally:
+                done = completed[0] + 1
+                completed[0] = done
+                state.progress_text.value = (
+                    f"正在搜索歌曲... ({done}/{total_songs})"
+                )
+                state.progress_bar.value = done / total_songs
+                page.update()
+
+    search_results = await asyncio.gather(
+        *[_search_one(s) for s in all_songs]
+    )
+
+    track_ids = []
+    match_count = 0
+    for song, tid, error in search_results:
+        if tid is not None:
+            track_ids.append(tid)
+            match_count += 1
+
+    _log(state, f"  搜索完成: {match_count} 首匹配成功, "
+                f"{total_songs - match_count} 首未找到")
 
     if not track_ids:
         _log(state, "[错误] 未匹配到任何歌曲，无法创建歌单")
@@ -624,7 +649,7 @@ async def _do_generate(
         page.update()
         return
 
-    _log(state, f"成功匹配 {len(track_ids)}/{len(songs)} 首")
+    _log(state, f"成功匹配 {len(track_ids)}/{len(all_songs)} 首")
 
     # ── 分支：新建歌单 vs 追加到已有 ─────────────────────────
     if mode == "append":
@@ -678,7 +703,6 @@ async def _do_generate(
             page.update()
             return
 
-        # ── 追加写入 ──────────────────────────────────────────
         _log(state, f"\n[4/5] 正在将 {len(new_ids)} 首新歌追加到歌单...")
         try:
             success = await asyncio.to_thread(
@@ -701,7 +725,6 @@ async def _do_generate(
             page.update()
             return
 
-        # ── 完成 ────────────────────────────────────────────
         _log(state, f"\n[5/5] 操作完成!")
         if success:
             _log(state, "=" * 40)
@@ -722,10 +745,11 @@ async def _do_generate(
         page.update()
         return
 
-    # ── 新建模式：原逻辑 ──────────────────────────────────────
+    # ── 新建模式 ──────────────────────────────────────────────
     if not playlist_name:
-        if artist:
-            name = f"[{artist}] 专属精选"
+        if artists:
+            artist_str = " + ".join(artists)
+            name = f"[{artist_str}] 专属精选"
         else:
             today = datetime.now().strftime("%m月%d日")
             name = f"全网热歌实时精选 [{today}]"
@@ -759,7 +783,6 @@ async def _do_generate(
 
     _log(state, f"歌单创建成功! (ID: {playlist_id})")
 
-    # ── 添加歌曲 ──────────────────────────────────────────────
     _log(state, f"\n[4/5] 正在将 {len(track_ids)} 首歌曲添加到歌单...")
     try:
         success = await asyncio.to_thread(
@@ -782,7 +805,6 @@ async def _do_generate(
         page.update()
         return
 
-    # ── 完成 ───────────────────────────────────────────────────
     _log(state, f"\n[5/5] 操作完成!")
     if success:
         _log(state, "=" * 40)

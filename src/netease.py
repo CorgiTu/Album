@@ -3,10 +3,16 @@
 使用成熟的 AES+RSA 加密库处理鉴权，支持手动 Cookie 登录
 """
 
+import threading
+
 import pyncm
 from pyncm.apis.login import LoginViaCookie, GetCurrentLoginStatus
 from pyncm.apis.cloudsearch import GetSearchResult
 from pyncm.apis.playlist import SetCreatePlaylist, SetManipulatePlaylistTracks, GetPlaylistInfo
+
+
+_session_lock = threading.Lock()
+_session_ready = threading.Event()
 
 
 class NeteaseError(Exception):
@@ -95,6 +101,44 @@ def _init_session(cookie: str) -> dict:
         raise CookieInvalidError("Cookie 已过期，请重新获取")
 
     return status
+
+
+def init_session_once(cookie: str):
+    """线程安全地初始化 pyncm session（仅首次真实执行，后续跳过）
+
+    专为高并发批量搜索设计：所有并发任务共享一次 session 初始化，
+    避免 `SetNewSession` 在多个线程间交替执行导致 session 错乱。
+    """
+    if _session_ready.is_set():
+        return
+    with _session_lock:
+        if _session_ready.is_set():
+            return
+        _init_session(cookie)
+        _session_ready.set()
+
+
+def search_song_shared(keyword: str) -> int | None:
+    """使用已初始化的共享 session 搜索歌曲
+
+    必须在 `init_session_once` 之后调用，跳过重复的 session 初始化。
+
+    Returns:
+        匹配到的 track_id，未找到返回 None
+
+    Raises:
+        SearchFailedError: 搜索请求失败
+    """
+    try:
+        result = GetSearchResult(keyword, limit=5)
+    except Exception as e:
+        raise SearchFailedError(f"搜索请求异常: {e}") from e
+    if result.get("code") != 200:
+        return None
+    songs = result.get("result", {}).get("songs", [])
+    if not songs:
+        return None
+    return songs[0]["id"]
 
 
 def search_song(keyword: str, cookie: str) -> int | None:
