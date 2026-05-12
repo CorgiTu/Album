@@ -49,7 +49,7 @@ HOT_SONGS_FALLBACK = [
 class KugouCrawler(BaseCrawler):
     """酷狗音乐歌曲获取器"""
 
-    async def fetch(self, target: str = "", count: int = 20) -> list[dict]:
+    async def fetch(self, target: str = "", count: int = 20, search_type: str = "artist") -> list[dict]:
         if not target or not target.strip():
             return self._get_fallback(count)
         try:

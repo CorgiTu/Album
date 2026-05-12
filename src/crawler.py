@@ -25,14 +25,15 @@ def _discover_plugins():
 _discover_plugins()
 
 
-async def crawl(platform: str, artist: str = "", top_n: int = 20) -> list[dict]:
+async def crawl(platform: str, artist: str = "", top_n: int = 20, search_type: str = "artist") -> list[dict]:
     """
     多平台数据抓取入口 — 根据 platform 名称动态加载对应插件。
 
     Args:
-        platform: 平台名称，如 "QQ音乐" / "抖音热歌榜" / "B站音乐区热门"
-        artist:   歌手名（仅部分平台使用）
-        top_n:    最多返回的歌曲数量
+        platform:    平台名称，如 "QQ音乐" / "抖音热歌榜" / "B站音乐区热门"
+        artist:      歌手名（仅部分平台使用）
+        top_n:       最多返回的歌曲数量
+        search_type: 搜索类型，"artist" 按歌手搜索，"song" 按歌曲名搜索
 
     Returns:
         [{"song": "歌名", "artist": "歌手"}, ...]
@@ -44,7 +45,7 @@ async def crawl(platform: str, artist: str = "", top_n: int = 20) -> list[dict]:
         crawler_inst = get_crawler("QQ音乐")
         if crawler_inst is None:
             return []
-    return await crawler_inst.fetch(artist, top_n)
+    return await crawler_inst.fetch(artist, top_n, search_type)
 
 
 def filter_song(song_name: str, song_artist: str,

@@ -13,7 +13,7 @@ from . import BaseCrawler, register
 class BilibiliCrawler(BaseCrawler):
     """B站音乐区热门数据抓取"""
 
-    async def fetch(self, target: str = "", count: int = 20) -> list[dict]:
+    async def fetch(self, target: str = "", count: int = 20, search_type: str = "artist") -> list[dict]:
         print(f"[bilibili] 抓取 B站音乐区热门 (top_n={count})")
         mock_songs = [
             {"song": "青花瓷（翻唱）", "artist": "某声君"},

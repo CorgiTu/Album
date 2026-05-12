@@ -13,7 +13,7 @@ from . import BaseCrawler, register
 class DouyinCrawler(BaseCrawler):
     """抖音热歌榜数据抓取"""
 
-    async def fetch(self, target: str = "", count: int = 20) -> list[dict]:
+    async def fetch(self, target: str = "", count: int = 20, search_type: str = "artist") -> list[dict]:
         print(f"[douyin] 抓取抖音热歌榜 (top_n={count})")
         mock_songs = [
             {"song": "离别开出花", "artist": "叶恨水"},

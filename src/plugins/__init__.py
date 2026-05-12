@@ -35,11 +35,11 @@ def get_all_platforms() -> list[str]:
 class BaseCrawler(ABC):
     """数据源爬虫基类
 
-    所有插件必须实现 fetch(target, count) 方法，
+    所有插件必须实现 fetch(target, count, search_type) 方法，
     返回 [{"song": "歌名", "artist": "歌手"}, ...] 格式的列表。
     """
     PLATFORM_NAME: str = ""
 
     @abstractmethod
-    async def fetch(self, target: str = "", count: int = 20) -> list[dict]:
+    async def fetch(self, target: str = "", count: int = 20, search_type: str = "artist") -> list[dict]:
         ...

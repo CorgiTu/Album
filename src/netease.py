@@ -3,16 +3,188 @@
 使用成熟的 AES+RSA 加密库处理鉴权，支持手动 Cookie 登录
 """
 
+import asyncio
+import base64
+import hashlib
+import struct
 import threading
+import zlib
+from pathlib import Path
 
+import httpx
 import pyncm
+import requests
 from pyncm.apis.login import LoginViaCookie, GetCurrentLoginStatus
 from pyncm.apis.cloudsearch import GetSearchResult
 from pyncm.apis.playlist import SetCreatePlaylist, SetManipulatePlaylistTracks, GetPlaylistInfo
+from pyncm.apis.user import GetUserPlaylists
 
 
 _session_lock = threading.Lock()
 _session_ready = threading.Event()
+
+_image_cache: dict[str, str] = {}
+_image_cache_lock = threading.Lock()
+_IMAGE_HEADERS = {
+    "Referer": "http://music.163.com",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+}
+
+
+def _generate_placeholder(w: int = 40, h: int = 40) -> str:
+    raw = b""
+    for _ in range(h):
+        raw += b"\x00"
+        for _ in range(w):
+            raw += struct.pack("BBB", 30, 30, 30)
+    compressed = zlib.compress(raw)
+
+    def chunk(ctype: bytes, data: bytes) -> bytes:
+        c = ctype + data
+        crc = struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+        return struct.pack(">I", len(data)) + c + crc
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", ihdr)
+    png += chunk(b"IDAT", compressed)
+    png += chunk(b"IEND", b"")
+    return base64.b64encode(png).decode()
+
+
+_DATA_URI_PREFIX = "data:image/png;base64,"
+
+PLACEHOLDER_BASE64 = _DATA_URI_PREFIX + _generate_placeholder()
+
+_CACHE_DIR = Path(__file__).parent.parent / ".cache"
+
+
+def _cache_path(url: str) -> Path:
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.md5(url.encode()).hexdigest()
+    return _CACHE_DIR / f"{digest}.txt"
+
+
+def _thumbnail_url(url: str, size: int = 100) -> str:
+    """为网易云图片 URL 追加缩略图裁剪参数，大幅缩小下载体积
+
+    Args:
+        url:  原始图片 URL
+        size: 目标边长（像素）
+
+    Returns:
+        带 ?param={size}y{size} 的裁剪后 URL
+    """
+    if not url or "?" not in url:
+        return f"{url}?param={size}y{size}"
+    return f"{url}&param={size}y{size}"
+
+
+def fetch_image_as_base64(url: str) -> str:
+    """同步下载图片并转换为 data URI，带 Referer 绕过防盗链
+
+    Args:
+        url: 图片 URL
+
+    Returns:
+        data:image/png;base64,... 格式的数据 URI
+    """
+    if not url:
+        return PLACEHOLDER_BASE64
+
+    thumb_url = _thumbnail_url(url)
+    with _image_cache_lock:
+        cached = _image_cache.get(thumb_url)
+        if cached is not None:
+            return _DATA_URI_PREFIX + cached
+
+    try:
+        resp = requests.get(
+            thumb_url,
+            headers=_IMAGE_HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        b64 = base64.b64encode(resp.content).decode()
+    except Exception:
+        return PLACEHOLDER_BASE64
+
+    with _image_cache_lock:
+        _image_cache[thumb_url] = b64
+    return _DATA_URI_PREFIX + b64
+
+
+_async_httpx_client: httpx.AsyncClient | None = None
+_async_client_lock = asyncio.Lock()
+
+
+async def _get_async_client() -> httpx.AsyncClient:
+    global _async_httpx_client
+    if _async_httpx_client is None:
+        async with _async_client_lock:
+            if _async_httpx_client is None:
+                _async_httpx_client = httpx.AsyncClient(
+                    headers=_IMAGE_HEADERS,
+                    timeout=httpx.Timeout(10.0),
+                    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+                )
+    return _async_httpx_client
+
+
+async def fetch_image_as_base64_async(url: str) -> str:
+    """异步下载图片并转换为 data URI，带 Referer 绕过防盗链
+
+    使用 httpx.AsyncClient + 连接池，可与其他异步任务零阻塞并发。
+    配合 _thumbnail_url 使用缩略图可达到毫秒级完成。
+    支持本地磁盘缓存（.cache 目录），二次启动零网络请求。
+
+    Args:
+        url: 图片 URL
+
+    Returns:
+        data:image/png;base64,... 格式的数据 URI
+    """
+    if not url:
+        return PLACEHOLDER_BASE64
+
+    thumb_url = _thumbnail_url(url)
+    cache_file = _cache_path(thumb_url)
+
+    with _image_cache_lock:
+        cached = _image_cache.get(thumb_url)
+        if cached is not None:
+            return _DATA_URI_PREFIX + cached
+
+    if cache_file.is_file():
+        try:
+            raw_b64 = cache_file.read_text(encoding="ascii")
+            with _image_cache_lock:
+                _image_cache[thumb_url] = raw_b64
+            return _DATA_URI_PREFIX + raw_b64
+        except Exception:
+            pass
+
+    try:
+        client = await _get_async_client()
+        resp = await client.get(thumb_url)
+        resp.raise_for_status()
+        b64 = base64.b64encode(resp.content).decode()
+    except Exception:
+        return PLACEHOLDER_BASE64
+
+    with _image_cache_lock:
+        _image_cache[thumb_url] = b64
+
+    try:
+        cache_file.write_text(b64, encoding="ascii")
+    except Exception:
+        pass
+
+    return _DATA_URI_PREFIX + b64
 
 
 class NeteaseError(Exception):
@@ -260,3 +432,69 @@ def get_playlist_track_ids(playlist_id: int, cookie: str) -> set[int]:
     track_ids_raw = playlist.get("trackIds", [])
 
     return {item["id"] for item in track_ids_raw if "id" in item}
+
+
+def get_user_info(cookie: str) -> dict:
+    """获取当前登录用户的基本信息
+
+    Args:
+        cookie: 网易云 MUSIC_U Cookie 字符串
+
+    Returns:
+        {"uid": int, "nickname": str, "avatarUrl": str}
+
+    Raises:
+        CookieInvalidError: Cookie 无效或已过期
+    """
+    _init_session(cookie)
+    status = GetCurrentLoginStatus()
+    if not status.get("account"):
+        raise CookieInvalidError("Cookie 已过期，请重新获取")
+    profile = status.get("profile", {})
+    avatar_url = (profile.get("avatarUrl", "") or "").replace("http://", "https://")
+    return {
+        "uid": profile.get("userId", 0),
+        "nickname": profile.get("nickname", "未知用户"),
+        "avatarUrl": avatar_url,
+    }
+
+
+def get_user_created_playlists(uid: int, cookie: str) -> list[dict]:
+    """获取指定用户自己创建的歌单列表（排除收藏的他人歌单）
+
+    Args:
+        uid: 用户 ID
+        cookie: 网易云 MUSIC_U Cookie 字符串
+
+    Returns:
+        歌单列表，每个元素包含 {id, name, coverImgUrl, trackCount}
+
+    Raises:
+        CookieInvalidError: Cookie 无效
+        PlaylistOperationError: 获取歌单失败
+    """
+    _init_session(cookie)
+
+    try:
+        result = GetUserPlaylists(uid, offset=0, limit=200)
+    except Exception as e:
+        raise PlaylistOperationError(f"获取用户歌单失败: {e}")
+
+    if result.get("code") != 200:
+        raise PlaylistOperationError(
+            f"获取用户歌单失败，API 返回 code={result.get('code')}"
+        )
+
+    all_playlists = result.get("playlist", [])
+    created = []
+    for pl in all_playlists:
+        creator_id = pl.get("creator", {}).get("userId", 0)
+        if creator_id == uid:
+            cover_url = (pl.get("coverImgUrl", "") or "").replace("http://", "https://")
+            created.append({
+                "id": pl["id"],
+                "name": pl["name"],
+                "coverImgUrl": cover_url,
+                "trackCount": pl.get("trackCount", 0),
+            })
+    return created

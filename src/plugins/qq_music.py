@@ -21,11 +21,14 @@ HOT_SONG_PLAYLIST_ID = 3778678
 class QQMusicCrawler(BaseCrawler):
     """基于 pyncm 的歌曲获取器，通过网易云 API 获取歌手热门歌曲"""
 
-    async def fetch(self, target: str = "", count: int = 20) -> list[dict]:
+    async def fetch(self, target: str = "", count: int = 20, search_type: str = "artist") -> list[dict]:
         if not target or not target.strip():
             return await self._fetch_hot_chart(count)
         try:
-            songs = await asyncio.to_thread(self._fetch_hot_songs, target, count)
+            if search_type == "song":
+                songs = await asyncio.to_thread(self._fetch_songs_direct, target, count)
+            else:
+                songs = await asyncio.to_thread(self._fetch_hot_songs, target, count)
         except Exception as e:
             print(f"[qq_music] 搜索异常: {type(e).__name__}: {e}")
             return []
@@ -61,6 +64,19 @@ class QQMusicCrawler(BaseCrawler):
         artist_id = str(artists[0]["id"])
         tracks = GetArtistTracks(artist_id, offset=0, limit=top_n, order="hot")
         songs = tracks.get("songs", [])
+        result = []
+        for s in songs:
+            anames = [a.get("name", "") for a in s.get("artists", s.get("ar", []))]
+            result.append({
+                "song": s.get("name", ""),
+                "artist": " / ".join(anames),
+            })
+        return result
+
+    def _fetch_songs_direct(self, keyword: str, top_n: int) -> list[dict]:
+        LoginViaAnonymousAccount()
+        sr = GetSearchResult(keyword, stype=1, limit=top_n)
+        songs = sr.get("result", {}).get("songs", [])
         result = []
         for s in songs:
             anames = [a.get("name", "") for a in s.get("artists", s.get("ar", []))]

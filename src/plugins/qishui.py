@@ -35,7 +35,7 @@ HOT_SONGS_FALLBACK = [
 class QishuiCrawler(BaseCrawler):
     """汽水音乐歌曲获取器（框架实现）"""
 
-    async def fetch(self, target: str = "", count: int = 20) -> list[dict]:
+    async def fetch(self, target: str = "", count: int = 20, search_type: str = "artist") -> list[dict]:
         if not target or not target.strip():
             return self._get_fallback(count)
         print(f"[qishui] 汽水音乐暂未开放公开 API，返回测试数据")
